@@ -1,0 +1,277 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readdir, readFile } from 'node:fs/promises';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REGISTRY = join(__dirname, '..', 'registry');
+
+/**
+ * ワイヤリング済みモジュールとユーザー回答からプロジェクトを生成
+ */
+export async function generate(wiredModules, answers) {
+  const outDir = join(process.cwd(), answers.projectName);
+
+  // ディレクトリ構成 (Ideaxis パターン: environments/)
+  await mkdir(join(outDir, 'infra', 'modules'), { recursive: true });
+  await mkdir(join(outDir, 'infra', 'environments', 'dev'), { recursive: true });
+  await mkdir(join(outDir, 'infra', 'environments', 'stg'), { recursive: true });
+  await mkdir(join(outDir, 'infra', 'environments', 'prod'), { recursive: true });
+
+  // 1. Terraformモジュールをコピー
+  for (const mod of wiredModules) {
+    await copyTerraformModule(answers.cloud, mod.name, outDir);
+  }
+
+  // 2. environments/dev/ にファイル群を生成
+  const envDir = join(outDir, 'infra', 'environments', 'dev');
+  await writeFile(join(envDir, 'main.tf'), generateMainTf(wiredModules, answers));
+  await writeFile(join(envDir, 'variables.tf'), generateVariablesTf(answers));
+  await writeFile(join(envDir, 'provider.tf'), generateProviderTf(answers));
+  await writeFile(join(envDir, 'backend.tf'), generateBackendTf(answers));
+  await writeFile(join(envDir, 'outputs.tf'), generateOutputsTf(wiredModules, answers));
+  await writeFile(join(envDir, 'terraform.tfvars.example'), generateTfvarsExample(answers));
+
+  // 3. CLAUDE.md を生成
+  await writeFile(join(outDir, 'CLAUDE.md'), generateClaudeMd(wiredModules, answers));
+
+  // 4. Makefile を生成
+  await writeFile(join(outDir, 'Makefile'), generateMakefile(answers));
+
+  return outDir;
+}
+
+async function copyTerraformModule(cloud, moduleName, outDir) {
+  const src = join(REGISTRY, 'terraform', cloud, moduleName);
+  const dest = join(outDir, 'infra', 'modules', moduleName);
+  await mkdir(dest, { recursive: true });
+
+  let files;
+  try {
+    files = await readdir(src);
+  } catch {
+    return;
+  }
+
+  for (const file of files) {
+    if (file.endsWith('.tf')) {
+      const content = await readFile(join(src, file), 'utf-8');
+      await writeFile(join(dest, file), content);
+    }
+  }
+}
+
+function generateMainTf(wiredModules, answers) {
+  const lines = [];
+
+  for (const mod of wiredModules) {
+    lines.push(`module "${mod.name}" {`);
+    lines.push(`  source = "../../modules/${mod.name}"`);
+    lines.push(``);
+    lines.push(`  project_name = var.project_name`);
+    lines.push(`  environment  = var.environment`);
+
+    for (const [varName, ref] of Object.entries(mod.wiring)) {
+      lines.push(`  ${padRight(varName, 25)} = ${ref}`);
+    }
+
+    lines.push(`}`, ``);
+  }
+
+  return lines.join('\n');
+}
+
+function generateProviderTf(answers) {
+  if (answers.cloud === 'aws') {
+    return `terraform {
+  required_version = ">= 1.5"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "ap-northeast-1"
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}
+`;
+  }
+
+  if (answers.cloud === 'gcp') {
+    return `terraform {
+  required_version = ">= 1.5"
+
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.gcp_project_id
+  region  = "asia-northeast1"
+}
+`;
+  }
+
+  return '';
+}
+
+function generateBackendTf(answers) {
+  return `terraform {
+  backend "local" {
+    path = "terraform.tfstate"
+  }
+}
+`;
+}
+
+function generateVariablesTf(answers) {
+  const lines = [
+    `variable "project_name" {`,
+    `  description = "Project name"`,
+    `  type        = string`,
+    `}`,
+    ``,
+    `variable "environment" {`,
+    `  description = "Environment name"`,
+    `  type        = string`,
+    `}`,
+  ];
+
+  return lines.join('\n') + '\n';
+}
+
+function generateOutputsTf(wiredModules, answers) {
+  const lines = [];
+
+  for (const mod of wiredModules) {
+    if (mod.name === 'alb') {
+      lines.push(
+        `output "alb_dns_name" {`,
+        `  value = module.alb.alb_dns_name`,
+        `}`,
+        ``,
+      );
+    }
+    if (mod.name === 'rds-postgres') {
+      lines.push(
+        `output "db_endpoint" {`,
+        `  value = module.rds-postgres.db_endpoint`,
+        `}`,
+        ``,
+      );
+    }
+  }
+
+  return lines.join('\n') || '# outputs\n';
+}
+
+function generateTfvarsExample(answers) {
+  return `project_name = "${answers.projectName}"
+environment  = "dev"
+`;
+}
+
+function generateClaudeMd(wiredModules, answers) {
+  const moduleList = wiredModules.map((m) => `- ${m.name}`).join('\n');
+
+  return `# ${answers.projectName}
+
+## Project Overview
+
+This project was generated by create-yushio-devenv.
+
+## Tech Stack
+
+- **Cloud:** ${answers.cloud.toUpperCase()}
+- **Backend:** ${answers.backend}
+- **Compute:** ${answers.compute}
+- **Database:** ${answers.database}
+- **CI/CD:** ${answers.cicd}
+
+## Infrastructure
+
+### Terraform Modules
+${moduleList}
+
+### Directory Structure
+\`\`\`
+infra/
+├── modules/
+${wiredModules.map((m) => `│   ├── ${m.name}/`).join('\n')}
+└── environments/
+    ├── dev/
+    ├── stg/
+    └── prod/
+\`\`\`
+
+### Module Wiring
+${wiredModules
+  .filter((m) => Object.keys(m.wiring).length > 0)
+  .map((m) => {
+    const connections = Object.entries(m.wiring)
+      .map(([k, v]) => `- \`${k}\` <- \`${v}\``)
+      .join('\n');
+    return `#### ${m.name}\n${connections}`;
+  })
+  .join('\n\n')}
+
+## Commands
+
+\`\`\`bash
+make init      # terraform init
+make plan      # terraform plan
+make apply     # terraform apply
+\`\`\`
+
+## Customization Guide
+
+This is a scaffold. Customize:
+
+1. **Application code** - Implement your backend business logic
+2. **Terraform variables** - Adjust tfvars per environment
+3. **CI/CD pipeline** - Adapt to your team's deployment flow
+4. **Backend config** - Switch from local to S3/GCS for remote state
+`;
+}
+
+function generateMakefile(answers) {
+  return `.PHONY: init plan apply destroy
+
+ENV ?= dev
+
+init:
+\tcd infra/environments/$(ENV) && terraform init
+
+plan:
+\tcd infra/environments/$(ENV) && terraform plan
+
+apply:
+\tcd infra/environments/$(ENV) && terraform apply
+
+destroy:
+\tcd infra/environments/$(ENV) && terraform destroy
+`;
+}
+
+function padRight(str, len) {
+  return str + ' '.repeat(Math.max(0, len - str.length));
+}
