@@ -9,6 +9,8 @@ const DEPENDENCIES = {
   'cloud-run': [],
   'cloud-sql': [],
   'dynamodb': [],
+  'ecr': [],
+  'github-oidc': [],
 };
 
 /**
@@ -16,6 +18,16 @@ const DEPENDENCIES = {
  */
 export function resolve(answers) {
   const selected = [answers.compute, answers.database];
+
+  // GitHub Actions 選択時は OIDC モジュールを追加
+  if (answers.cicd === 'github-actions') {
+    selected.push('github-oidc');
+    // ECS Fargate 選択時は ECR も追加
+    if (answers.compute === 'ecs-fargate') {
+      selected.push('ecr');
+    }
+  }
+
   const resolved = new Set();
 
   function addWithDeps(mod) {

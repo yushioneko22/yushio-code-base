@@ -2,6 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readdir, readFile } from 'node:fs/promises';
+import { generateCicd } from './cicd-generator.mjs';
+import { generateDocker } from './docker-generator.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REGISTRY = join(__dirname, '..', 'registry');
@@ -37,6 +39,15 @@ export async function generate(wiredModules, answers) {
 
   // 4. Makefile を生成
   await writeFile(join(outDir, 'Makefile'), generateMakefile(answers));
+
+  // 5. CI/CD ワークフローを生成
+  await generateCicd(outDir, answers);
+
+  // 6. Dockerfile & docker-compose.yml を生成
+  await generateDocker(outDir, answers);
+
+  // 7. .gitignore を生成
+  await writeFile(join(outDir, '.gitignore'), generateGitignore(answers));
 
   return outDir;
 }
@@ -156,6 +167,21 @@ function generateVariablesTf(answers) {
     `}`,
   ];
 
+  if (answers.cicd === 'github-actions') {
+    lines.push(
+      ``,
+      `variable "github_owner" {`,
+      `  description = "GitHub repository owner"`,
+      `  type        = string`,
+      `}`,
+      ``,
+      `variable "github_repo" {`,
+      `  description = "GitHub repository name"`,
+      `  type        = string`,
+      `}`,
+    );
+  }
+
   return lines.join('\n') + '\n';
 }
 
@@ -179,15 +205,37 @@ function generateOutputsTf(wiredModules, answers) {
         ``,
       );
     }
+    if (mod.name === 'github-oidc') {
+      lines.push(
+        `output "github_actions_deploy_role_arn" {`,
+        `  value = module.github-oidc.deploy_role_arn`,
+        `}`,
+        ``,
+      );
+    }
+    if (mod.name === 'ecr') {
+      lines.push(
+        `output "ecr_repository_url" {`,
+        `  value = module.ecr.repository_url`,
+        `}`,
+        ``,
+      );
+    }
   }
 
   return lines.join('\n') || '# outputs\n';
 }
 
 function generateTfvarsExample(answers) {
-  return `project_name = "${answers.projectName}"
+  let content = `project_name = "${answers.projectName}"
 environment  = "dev"
 `;
+  if (answers.cicd === 'github-actions') {
+    content += `github_owner = "<YOUR_GITHUB_OWNER>"
+github_repo  = "<YOUR_GITHUB_REPO>"
+`;
+  }
+  return content;
 }
 
 function generateClaudeMd(wiredModules, answers) {
@@ -269,6 +317,46 @@ apply:
 
 destroy:
 \tcd infra/environments/$(ENV) && terraform destroy
+`;
+}
+
+function generateGitignore() {
+  return `# Dependencies
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.exe
 `;
 }
 

@@ -40,10 +40,22 @@ resource "aws_ecs_task_definition" "main" {
 
       portMappings = [
         {
-          containerPort = 8080
+          containerPort = var.container_port
           protocol      = "tcp"
         }
       ]
+
+      environment = [
+        { name = "PORT", value = tostring(var.container_port) },
+        { name = "APP_ENV", value = var.environment },
+      ]
+
+      secrets = var.db_credentials_secret_arn != "" ? [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = "${var.db_credentials_secret_arn}:database_url::"
+        }
+      ] : []
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -55,7 +67,7 @@ resource "aws_ecs_task_definition" "main" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -69,11 +81,12 @@ resource "aws_ecs_task_definition" "main" {
 # ECS Service
 ################################
 resource "aws_ecs_service" "main" {
-  name            = "${var.project_name}-${var.environment}"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.main.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+  name                   = "${var.project_name}-${var.environment}"
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.main.arn
+  desired_count          = var.desired_count
+  launch_type            = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets          = var.private_subnet_ids
@@ -84,12 +97,16 @@ resource "aws_ecs_service" "main" {
   load_balancer {
     target_group_arn = var.backend_target_group_arn
     container_name   = "app"
-    container_port   = 8080
+    container_port   = var.container_port
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 }
 
 ################################
-# IAM
+# IAM - Execution Role
 ################################
 resource "aws_iam_role" "ecs_execution" {
   name = "${var.project_name}-${var.environment}-ecs-execution"
@@ -113,6 +130,29 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Secrets Manager / SSM Parameter アクセス (DB接続情報等)
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  count = var.db_credentials_secret_arn != "" ? 1 : 0
+  name  = "${var.project_name}-${var.environment}-execution-secrets"
+  role  = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [var.db_credentials_secret_arn]
+      }
+    ]
+  })
+}
+
+################################
+# IAM - Task Role
+################################
 resource "aws_iam_role" "ecs_task" {
   name = "${var.project_name}-${var.environment}-ecs-task"
 
@@ -125,6 +165,28 @@ resource "aws_iam_role" "ecs_task" {
         Principal = {
           Service = "ecs-tasks.amazonaws.com"
         }
+      }
+    ]
+  })
+}
+
+# ECS Exec 用 (SSM Messages)
+resource "aws_iam_role_policy" "ecs_task_exec" {
+  name = "${var.project_name}-${var.environment}-task-exec"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
       }
     ]
   })

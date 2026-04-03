@@ -18,17 +18,22 @@ resource "aws_lb" "main" {
 ################################
 resource "aws_lb_target_group" "backend" {
   name        = "${var.project_name}-${var.environment}-backend"
-  port        = 8080
+  port        = var.backend_port
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
-    path                = "/health"
+    path                = var.health_check_path
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 30
+    matcher             = "200"
+  }
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-backend-tg"
   }
 }
 
