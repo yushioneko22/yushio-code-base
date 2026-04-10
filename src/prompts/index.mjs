@@ -61,6 +61,15 @@ export async function runPrompts() {
     });
   }
 
+  const frontend = await select({
+    message: 'フロントエンド:',
+    choices: [
+      { name: 'Next.js', value: 'nextjs' },
+      { name: 'Vite + React', value: 'vite-react' },
+      { name: 'なし', value: 'none' },
+    ],
+  });
+
   const cicd = await select({
     message: 'CI/CD:',
     choices: [
@@ -71,5 +80,5 @@ export async function runPrompts() {
   });
 
   console.log('');
-  return { projectName, cloud, backend, compute, database, cicd };
+  return { projectName, cloud, backend, frontend, compute, database, cicd };
 }

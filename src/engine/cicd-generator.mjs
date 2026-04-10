@@ -19,6 +19,8 @@ export async function generateCicd(outDir, answers) {
 // ---------------------------------------------------------------------------
 
 function generateCiYml(answers) {
+  const hasFrontend = answers.frontend && answers.frontend !== 'none';
+
   const lines = [
     `name: CI`,
     ``,
@@ -29,14 +31,48 @@ function generateCiYml(answers) {
     `    branches: [main]`,
     ``,
     `jobs:`,
-    `  test:`,
+    `  test-backend:`,
     `    runs-on: ubuntu-latest`,
+    `    defaults:`,
+    `      run:`,
+    `        working-directory: backend`,
     `    steps:`,
     `      - uses: actions/checkout@v4`,
     ``,
   ];
 
   lines.push(...ciStepsForBackend(answers.backend));
+
+  if (hasFrontend) {
+    lines.push(
+      `  test-frontend:`,
+      `    runs-on: ubuntu-latest`,
+      `    defaults:`,
+      `      run:`,
+      `        working-directory: frontend`,
+      `    steps:`,
+      `      - uses: actions/checkout@v4`,
+      ``,
+      `      - uses: actions/setup-node@v4`,
+      `        with:`,
+      `          node-version: "20"`,
+      `          cache: npm`,
+      `          cache-dependency-path: frontend/package-lock.json`,
+      ``,
+      `      - name: Install`,
+      `        run: npm ci`,
+      ``,
+      `      - name: Lint`,
+      `        run: npm run lint --if-present`,
+      ``,
+      `      - name: Build`,
+      `        run: npm run build`,
+      ``,
+      `      - name: Test`,
+      `        run: npm test -- --passWithNoTests`,
+      ``,
+    );
+  }
 
   return lines.join('\n');
 }
